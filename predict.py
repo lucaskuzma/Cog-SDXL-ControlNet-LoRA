@@ -24,7 +24,7 @@ from diffusers import (
     StableDiffusionXLInpaintPipeline,
     StableDiffusionXLControlNetPipeline,
     StableDiffusionXLControlNetImg2ImgPipeline,
-    ControlNetModel
+    ControlNetModel,
 )
 from diffusers.models.attention_processor import LoRAAttnProcessor2_0
 from diffusers.pipelines.stable_diffusion.safety_checker import (
@@ -80,9 +80,9 @@ class Predictor(BasePredictor):
 
         # weights can be a URLPath, which behaves in unexpected ways
         weights = str(weights)
-        #if self.tuned_weights == weights:
-            #print("skipping loading .. weights already loaded")
-            #return
+        # if self.tuned_weights == weights:
+        # print("skipping loading .. weights already loaded")
+        # return
 
         self.tuned_weights = weights
 
@@ -189,12 +189,14 @@ class Predictor(BasePredictor):
         )
 
         print("Loading SDXL Controlnet pipeline...")
-        self.control_text2img_pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
-            SDXL_MODEL_CACHE,
-            controlnet=controlnet,
-            torch_dtype=torch.float16,
-            use_safetensors=True,
-            variant="fp16",
+        self.control_text2img_pipe = (
+            StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
+                SDXL_MODEL_CACHE,
+                controlnet=controlnet,
+                torch_dtype=torch.float16,
+                use_safetensors=True,
+                variant="fp16",
+            )
         )
         self.control_text2img_pipe.to("cuda")
         self.is_lora = False
@@ -219,39 +221,70 @@ class Predictor(BasePredictor):
     def load_image(self, path):
         shutil.copyfile(path, "/tmp/image.png")
         return load_image("/tmp/image.png").convert("RGB")
-    
+
     def resize_image(self, image):
         image_width, image_height = image.size
-        print("Original width:"+str(image_width)+", height:"+str(image_height))
-        new_width, new_height = self.resize_to_allowed_dimensions(image_width, image_height)
-        print("new_width:"+str(new_width)+", new_height:"+str(new_height))
+        print("Original width:" + str(image_width) + ", height:" + str(image_height))
+        new_width, new_height = self.resize_to_allowed_dimensions(
+            image_width, image_height
+        )
+        print("new_width:" + str(new_width) + ", new_height:" + str(new_height))
         image = image.resize((new_width, new_height))
         return image, new_width, new_height
-    
+
     def resize_to_allowed_dimensions(self, width, height):
         """
         Function re-used from Lucataco's implementation of SDXL-Controlnet for Replicate
         """
         # List of SDXL dimensions
         allowed_dimensions = [
-            (512, 2048), (512, 1984), (512, 1920), (512, 1856),
-            (576, 1792), (576, 1728), (576, 1664), (640, 1600),
-            (640, 1536), (704, 1472), (704, 1408), (704, 1344),
-            (768, 1344), (768, 1280), (832, 1216), (832, 1152),
-            (896, 1152), (896, 1088), (960, 1088), (960, 1024),
-            (1024, 1024), (1024, 960), (1088, 960), (1088, 896),
-            (1152, 896), (1152, 832), (1216, 832), (1280, 768),
-            (1344, 768), (1408, 704), (1472, 704), (1536, 640),
-            (1600, 640), (1664, 576), (1728, 576), (1792, 576),
-            (1856, 512), (1920, 512), (1984, 512), (2048, 512)
+            (512, 2048),
+            (512, 1984),
+            (512, 1920),
+            (512, 1856),
+            (576, 1792),
+            (576, 1728),
+            (576, 1664),
+            (640, 1600),
+            (640, 1536),
+            (704, 1472),
+            (704, 1408),
+            (704, 1344),
+            (768, 1344),
+            (768, 1280),
+            (832, 1216),
+            (832, 1152),
+            (896, 1152),
+            (896, 1088),
+            (960, 1088),
+            (960, 1024),
+            (1024, 1024),
+            (1024, 960),
+            (1088, 960),
+            (1088, 896),
+            (1152, 896),
+            (1152, 832),
+            (1216, 832),
+            (1280, 768),
+            (1344, 768),
+            (1408, 704),
+            (1472, 704),
+            (1536, 640),
+            (1600, 640),
+            (1664, 576),
+            (1728, 576),
+            (1792, 576),
+            (1856, 512),
+            (1920, 512),
+            (1984, 512),
+            (2048, 512),
         ]
         # Calculate the aspect ratio
         aspect_ratio = width / height
         print(f"Aspect Ratio: {aspect_ratio:.2f}")
         # Find the closest allowed dimensions that maintain the aspect ratio
         closest_dimensions = min(
-            allowed_dimensions,
-            key=lambda dim: abs(dim[0] / dim[1] - aspect_ratio)
+            allowed_dimensions, key=lambda dim: abs(dim[0] / dim[1] - aspect_ratio)
         )
         return closest_dimensions
 
@@ -286,6 +319,10 @@ class Predictor(BasePredictor):
         ),
         image: Path = Input(
             description="Input image for img2img or inpaint mode",
+            default=None,
+        ),
+        control_image: Path = Input(
+            description="Input image for controlnet",
             default=None,
         ),
         condition_scale: float = Input(
@@ -355,19 +392,25 @@ class Predictor(BasePredictor):
             # consistency with fine-tuning API
             for k, v in self.token_map.items():
                 prompt = prompt.replace(k, v)
+
         print(f"Prompt: {prompt}")
+
         image = self.load_image(image)
         image, width, height = self.resize_image(image)
-        print("txt2img mode")
-        sdxl_kwargs["image"] = self.image2canny(image)
-        sdxl_kwargs["controlnet_conditioning_scale"] = condition_scale
+        sdxl_kwargs["image"] = image
         sdxl_kwargs["width"] = width
         sdxl_kwargs["height"] = height
+
+        control_image = self.load_image(control_image)
+        control_image, width, height = self.resize_image(control_image)
+        sdxl_kwargs["control_image"] = self.image2canny(control_image)
+        sdxl_kwargs["controlnet_conditioning_scale"] = condition_scale
+
         pipe = self.control_text2img_pipe
 
         if refine == "base_image_refiner":
             sdxl_kwargs["output_type"] = "latent"
-            
+
         if not apply_watermark:
             # toggles watermark for this prediction
             watermark_cache = pipe.watermark
